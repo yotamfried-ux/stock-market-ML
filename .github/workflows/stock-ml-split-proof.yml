@@ -64,7 +64,7 @@ jobs:
                   )
               assert len(functions) == 1, "Expected exactly one notebook split function"
               module = ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[]))
-              namespace = {}
+              namespace = {"pd": pd}
               exec(compile(module, "notebook_split", "exec"), namespace)
               return namespace["time_based_split"]
 
