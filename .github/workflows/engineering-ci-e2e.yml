@@ -1,20 +1,17 @@
 name: Engineering CI E2E qualification
 
 on:
-  push:
-    branches: [engineering/ci-e2e-qualification]
-    paths: [.github/workflows/engineering-ci-e2e.yml]
   pull_request:
-    types: [opened]
+    types: [opened, reopened]
     branches: [engineering/ci-e2e-base]
 
 permissions: {}
 
 jobs:
   qualification:
-    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'engineering/ci-e2e-qualification')
+    if: (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'engineering/ci-e2e-qualification')
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - name: Validate trigger identity
         shell: bash
@@ -26,3 +23,5 @@ jobs:
           [[ "$SOURCE_REF" == 'engineering/ci-e2e-qualification' ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           printf 'qualification source: %s %s\n' "$SOURCE_REF" "$SOURCE_SHA"
+      - name: Allow time for the CI observer to register
+        run: sleep 120
