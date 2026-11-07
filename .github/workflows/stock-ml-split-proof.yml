@@ -1,0 +1,73 @@
+name: Stock ML chronological split regression
+
+on:
+  push:
+    branches: [engineering/stock-ml-split-proof]
+    paths:
+      - 'Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb'
+      - '.github/workflows/stock-ml-split-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb
+          sparse-checkout-cone-mode: false
+      - name: Run the notebook split function on synthetic dates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .env
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -m pip install --quiet pandas==2.2.3
+          python - <<'PY'
+          import ast
+          import json
+          from pathlib import Path
+
+          import pandas as pd
+
+          notebook = json.loads(Path("Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb").read_text())
+          functions = []
+          for cell in notebook["cells"]:
+              if cell["cell_type"] != "code":
+                  continue
+              source = "".join(cell["source"])
+              if "def time_based_split(" not in source:
+                  continue
+              functions.extend(
+                  item for item in ast.parse(source).body
+                  if isinstance(item, ast.FunctionDef) and item.name == "time_based_split"
+              )
+          assert len(functions) == 1, "Expected exactly one notebook split function"
+          module = ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[]))
+          namespace = {}
+          exec(compile(module, "notebook_split", "exec"), namespace)
+          split = namespace["time_based_split"]
+
+          dates = pd.date_range("2026-01-01", periods=10)
+          frame = pd.DataFrame({"date": dates.repeat(2), "ticker": ["A", "B"] * 10})
+          train, test, cutoff = split(frame, 0.7)
+          actual = (train.date.nunique(), test.date.nunique())
+          assert actual == (7, 3), f"SPLIT_RATIO_REGRESSION: expected (7, 3), got {actual}"
+          assert cutoff == dates[6] and train.date.max() < test.date.min()
+          assert len(train) + len(test) == len(frame)
+          train, test, _ = split(frame.iloc[:4], 0.1)
+          assert (train.date.nunique(), test.date.nunique()) == (1, 1)
+          for data, ratio in [(frame.iloc[:2], 0.7), (frame, 0), (frame, 1)]:
+              try:
+                  split(data, ratio)
+              except ValueError:
+                  continue
+              raise AssertionError("Invalid split input was accepted")
+          print("PASS: ratio, boundary, chronological order and invalid input")
+          PY
