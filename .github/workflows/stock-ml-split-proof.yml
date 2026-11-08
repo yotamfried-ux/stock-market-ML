@@ -2,7 +2,9 @@ name: Stock ML chronological split regression
 
 on:
   push:
-    branches: [engineering/stock-ml-engine-write-proof]
+    branches:
+      - 'engineering/stock-ml-engine-write-proof'
+      - 'engineering/stock-ml-live-20261108'
     paths:
       - 'Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb'
       - '.github/workflows/stock-ml-split-proof.yml'
