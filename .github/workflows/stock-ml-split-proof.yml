@@ -1,0 +1,95 @@
+name: Stock ML chronological split regression
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [engineering/qualification-v2-stock-base-002]
+    paths:
+      - 'Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1fe71698820536b460b76a86e04de86795b3a500
+          path: baseline
+          persist-credentials: false
+          sparse-checkout: |
+            Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Run the notebook split function on synthetic dates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .env
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -e baseline/.env
+          test "$(git -C baseline rev-parse HEAD)" = 1fe71698820536b460b76a86e04de86795b3a500
+          python -m pip install --only-binary=:all: --timeout 10 --retries 1 pandas==2.2.3
+          python - <<'PY'
+          import ast
+          import json
+          from pathlib import Path
+
+          import pandas as pd
+
+          def read_split(path):
+              notebook = json.loads(path.read_text())
+              functions = []
+              for cell in notebook["cells"]:
+                  if cell["cell_type"] != "code":
+                      continue
+                  source = "".join(cell["source"])
+                  if "def time_based_split(" not in source:
+                      continue
+                  functions.extend(
+                      item for item in ast.parse(source).body
+                      if isinstance(item, ast.FunctionDef) and item.name == "time_based_split"
+                  )
+              assert len(functions) == 1, "Expected exactly one notebook split function"
+              module = ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[]))
+              namespace = {"pd": pd}
+              exec(compile(module, "notebook_split", "exec"), namespace)
+              return namespace["time_based_split"]
+
+          notebook_path = Path("Step1_Stock_Forecast_EDA_v3_1_APIKeyVars.ipynb")
+          baseline_split = read_split(Path("baseline") / notebook_path)
+          split = read_split(notebook_path)
+
+          dates = pd.date_range("2026-01-01", periods=10)
+          frame = pd.DataFrame({"date": dates.repeat(2), "ticker": ["A", "B"] * 10})
+          old_train, old_test, _ = baseline_split(frame, 0.7)
+          baseline_actual = (old_train.date.nunique(), old_test.date.nunique())
+          assert baseline_actual == (8, 2), f"Expected the baseline defect, got {baseline_actual}"
+          print(f"BASELINE REPRODUCED: {baseline_actual}")
+          train, test, cutoff = split(frame, 0.7)
+          actual = (train.date.nunique(), test.date.nunique())
+          assert actual == (7, 3), f"SPLIT_RATIO_REGRESSION: expected (7, 3), got {actual}"
+          assert cutoff == dates[6] and train.date.max() < test.date.min()
+          assert len(train) + len(test) == len(frame)
+          train, test, _ = split(frame.iloc[:4], 0.1)
+          assert (train.date.nunique(), test.date.nunique()) == (1, 1)
+          for data, ratio in [(frame.iloc[:2], 0.7), (frame, 0), (frame, 1)]:
+              try:
+                  split(data, ratio)
+              except ValueError:
+                  continue
+              raise AssertionError("Invalid split input was accepted")
+          print("PASS: ratio, boundary, chronological order and invalid input")
+          PY
